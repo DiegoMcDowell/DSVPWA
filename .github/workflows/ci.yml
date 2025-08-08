@@ -4,22 +4,23 @@ on: [push, pull_request]
 
 jobs:
   sast:
-    name: Análisis Estático con herramientas locales
     runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v3
 
-      - name: Instalar dependencias Python
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v3
+
+      - name: Instalar dependencias
         run: |
           pip install bandit pylint
 
-      - name: Ejecutar Bandit
+      - name: Analizar con Bandit
         run: bandit -r dsvpwa -f html -o bandit_report.html || true
 
-      - name: Ejecutar Pylint
+      - name: Analizar con Pylint
         run: pylint dsvpwa/*.py || true
 
-      - name: Ejecutar SonarQube Scanner local
+      - name: Ejecutar SonarQube Scanner (local)
         run: sonar-scanner || true
 
       - name: Subir reporte Bandit
@@ -29,52 +30,53 @@ jobs:
           path: bandit_report.html
 
   dast:
-    name: Análisis Dinámico con ZAP local
     runs-on: self-hosted
     needs: sast
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout del código
+        uses: actions/checkout@v3
 
-      - name: Limpiar contenedor previo
+      - name: Verificar si imagen Docker ya existe
         run: |
-          docker rm -f vulnerable-app || true
+          if ! docker image inspect dsvpwa > /dev/null 2>&1; then
+            echo "🛠 Construyendo imagen 'dsvpwa'..."
+            docker build -t dsvpwa .
+          else
+            echo "✅ Imagen 'dsvpwa' ya existe. Skipping build."
+          fi
 
-      - name: Construir imagen Docker de DSVPWA
-        run: docker build -t dsvpwa .
-
-      - name: Crear red docker para ZAP
-        run: docker network create zapnet || true
-
-      - name: Lanzar contenedor vulnerable en red zapnet
+      - name: Verificar si el contenedor ya está corriendo
         run: |
-          docker run -d --network zapnet --name vulnerable-app dsvpwa \
-            python dsvpwa.py --host 0.0.0.0 --port 65413
+          if docker ps -q -f name=vulnerable-app > /dev/null; then
+            echo "✅ Contenedor 'vulnerable-app' ya está corriendo."
+          else
+            echo "🚀 Lanzando contenedor 'vulnerable-app'..."
+            docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
+          fi
 
-      - name: Esperar que la aplicación levante
+      - name: Esperar que la app esté en línea
         run: |
+          echo "⌛ Esperando que la app responda..."
           for i in $(seq 1 10); do
-            if curl -s http://localhost:65413 >/dev/null; then
-              echo "App lista"
-              break
+            if curl -s http://localhost:65413 | grep "DOCTYPE" > /dev/null; then
+              echo "✔ Aplicación en línea"
+              exit 0
             fi
             echo "Esperando..."
             sleep 2
-            if [ "$i" -eq 10 ]; then
-              echo "❌ La aplicación no respondió a tiempo"
-              exit 1
-            fi
           done
+          echo "❌ La aplicación no respondió a tiempo"
+          docker logs vulnerable-app || true
+          exit 1
 
-      - name: Ejecutar ZAP desde Docker en la misma red
+      - name: Ejecutar ZAP desde instalación local
         run: |
-          docker run --rm --network zapnet \
-            -v "$(pwd)":/zap/wrk/:rw \
-            owasp/zap2docker-stable \
-            zap-baseline.py \
-            -t http://vulnerable-app:65413 \
-            -r zap_report.html || true
+          /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
+            -cmd -quickurl http://localhost:65413 \
+            -quickout zap_report.html -quickprogress || true
 
-      - name: Validar existencia del reporte ZAP
+      - name: Verificar reporte ZAP
         run: |
           if [ -f zap_report.html ]; then
             echo "✔ Reporte ZAP generado correctamente"
@@ -83,12 +85,8 @@ jobs:
             exit 1
           fi
 
-      - name: Subir reporte ZAP
+      - name: Subir artefacto ZAP
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap_report.html
-
-      - name: Detener contenedor vulnerable al final
-        if: always()
-        run: docker rm -f vulnerable-app || true
