@@ -31,69 +31,49 @@ jobs:
   dast:
     runs-on: self-hosted
     needs: sast
-
     steps:
-      - name: Checkout del código
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Construir imagen Docker si no existe
-        run: |
-          if ! docker image inspect dsvpwa > /dev/null 2>&1; then
-            echo "🛠 Construyendo imagen 'dsvpwa'..."
-            docker build -t dsvpwa .
-          else
-            echo "✅ Imagen 'dsvpwa' ya existente"
-          fi
+      - name: Limpiar contenedor anterior
+        run: docker rm -f vulnerable-app || true
 
-      - name: Iniciar contenedor solo si el puerto 65413 está libre
-        run: |
-          if ! lsof -i TCP:65413 | grep LISTEN > /dev/null; then
-            echo "🚀 Puerto libre, lanzando contenedor 'vulnerable-app'..."
-            docker run -d --name vulnerable-app -p 127.0.0.1:65413:65413 dsvpwa
-          else
-            echo "✅ Puerto 65413 en uso, se asume contenedor existente"
-          fi
+      - name: Build imagen app
+        run: docker build -t dsvpwa .
 
-      - name: Esperar que la app responda (HTTP 200)
+      - name: Levantar app (expuesta en localhost)
+        run: docker run -d --name vulnerable-app -p 127.0.0.1:65413:65413 dsvpwa
+
+      - name: Healthcheck HTTP
         run: |
-          echo "⌛ Esperando respuesta en http://127.0.0.1:65413"
-          for i in {1..10}; do
-            if curl -s -f http://127.0.0.1:65413 > /dev/null; then
-              echo "✔ Aplicación en línea"
+          echo "⌛ Esperando http://127.0.0.1:65413"
+          for i in {1..15}; do
+            if curl -s -f http://127.0.0.1:65413 >/dev/null; then
+              echo "✔ OK"
               exit 0
             fi
-            echo "Esperando..."
+            echo "…"
             sleep 2
           done
-          echo "❌ La aplicación no respondió a tiempo"
-          docker logs vulnerable-app
+          echo "❌ No respondió"
+          docker logs vulnerable-app || true
           exit 1
 
-      - name: Escaneo ZAP Baseline con Docker
+      - name: ZAP local (sin Docker)
         run: |
-          docker run --rm -v "$(pwd)":/zap/wrk/:rw -t zaproxy/zap-stable \
-            zap-baseline.py \
-            -t http://127.0.0.1:65413 \
-            -r zap_report.html || true
+          /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
+            -cmd \
+            -quickurl http://127.0.0.1:65413 \
+            -quickout zap_report.html \
+            -quickprogress || true
 
-      - name: Verificar reporte ZAP
-        run: |
-          if [ -f zap_report.html ]; then
-            echo "✔ Reporte ZAP generado correctamente"
-          else
-            echo "❌ Reporte ZAP NO generado"
-            exit 1
-          fi
+      - name: Verificar reporte
+        run: test -f zap_report.html
 
-      - name: Subir reporte ZAP
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap_report.html
 
-      - name: Detener contenedor si fue iniciado por el workflow
+      - name: Cleanup
         if: always()
-        run: |
-          if docker ps -q -f name=vulnerable-app > /dev/null; then
-            docker rm -f vulnerable-app
-          fi
+        run: docker rm -f vulnerable-app || true
