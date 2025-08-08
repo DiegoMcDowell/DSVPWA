@@ -36,7 +36,7 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Verificar si imagen Docker ya existe
+      - name: Verificar imagen Docker
         run: |
           if ! docker image inspect dsvpwa > /dev/null 2>&1; then
             echo "🛠 Construyendo imagen 'dsvpwa'..."
@@ -45,20 +45,20 @@ jobs:
             echo "✅ Imagen 'dsvpwa' ya existe."
           fi
 
-      - name: Verificar si algo ya usa el puerto 65413
+      - name: Verificar si algo usa el puerto 65413
         run: |
           if lsof -i TCP:65413 | grep LISTEN > /dev/null; then
-            echo "✅ Puerto 65413 ya en uso, usando contenedor existente."
+            echo "✅ Puerto 65413 en uso, reutilizando contenedor existente."
           else
             echo "🚀 Lanzando contenedor 'vulnerable-app'..."
             docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
           fi
 
-      - name: Esperar a que la app esté disponible
+      - name: Esperar que la app esté disponible
         run: |
-          echo "⌛ Esperando que la app responda en http://host.docker.internal:65413"
+          echo "⌛ Esperando respuesta en http://localhost:65413"
           for i in $(seq 1 10); do
-            if curl -s http://host.docker.internal:65413 | grep "<!DOCTYPE" > /dev/null; then
+            if curl -s http://localhost:65413 | grep "<!DOCTYPE" > /dev/null; then
               echo "✔ Aplicación en línea"
               exit 0
             fi
@@ -66,16 +66,13 @@ jobs:
             sleep 2
           done
           echo "❌ La aplicación no respondió a tiempo"
-          docker logs vulnerable-app || true
           exit 1
 
-      - name: Ejecutar escaneo con OWASP ZAP (local)
+      - name: Ejecutar ZAP local apuntando a localhost
         run: |
           /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd \
-            -quickurl http://host.docker.internal:65413 \
-            -quickout zap_report.html \
-            -quickprogress || true
+            -cmd -quickurl http://localhost:65413 \
+            -quickout zap_report.html -quickprogress || true
 
       - name: Verificar reporte ZAP
         run: |
@@ -86,7 +83,7 @@ jobs:
             exit 1
           fi
 
-      - name: Subir reporte ZAP
+      - name: Subir artefacto ZAP
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
