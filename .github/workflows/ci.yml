@@ -10,9 +10,8 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Instalar dependencias
-        run: |
-          pip install bandit pylint
+      - name: Instalar dependencias Python
+        run: pip install bandit pylint
 
       - name: Analizar con Bandit
         run: bandit -r dsvpwa -f html -o bandit_report.html || true
@@ -43,23 +42,23 @@ jobs:
             echo "🛠 Construyendo imagen 'dsvpwa'..."
             docker build -t dsvpwa .
           else
-            echo "✅ Imagen 'dsvpwa' ya existe. Skipping build."
+            echo "✅ Imagen 'dsvpwa' ya existe."
           fi
 
-      - name: Verificar si algo ya está usando el puerto 65413
+      - name: Verificar si algo ya usa el puerto 65413
         run: |
-          if lsof -i :65413 | grep LISTEN > /dev/null; then
-            echo "✅ Ya hay algo corriendo en el puerto 65413. Usándolo."
+          if lsof -i TCP:65413 | grep LISTEN > /dev/null; then
+            echo "✅ Puerto 65413 ya en uso, usando contenedor existente."
           else
-            echo "🚀 Nada en el puerto, lanzando contenedor..."
+            echo "🚀 Lanzando contenedor 'vulnerable-app'..."
             docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
           fi
 
-      - name: Esperar que la app esté en línea
+      - name: Esperar a que la app esté disponible
         run: |
-          echo "⌛ Esperando que la app responda..."
+          echo "⌛ Esperando que la app responda en http://host.docker.internal:65413"
           for i in $(seq 1 10); do
-            if curl -s http://localhost:65413 | grep "DOCTYPE" > /dev/null; then
+            if curl -s http://host.docker.internal:65413 | grep "<!DOCTYPE" > /dev/null; then
               echo "✔ Aplicación en línea"
               exit 0
             fi
@@ -67,13 +66,16 @@ jobs:
             sleep 2
           done
           echo "❌ La aplicación no respondió a tiempo"
+          docker logs vulnerable-app || true
           exit 1
 
-      - name: Ejecutar ZAP desde instalación local
+      - name: Ejecutar escaneo con OWASP ZAP (local)
         run: |
           /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd -quickurl http://localhost:65413 \
-            -quickout zap_report.html -quickprogress || true
+            -cmd \
+            -quickurl http://host.docker.internal:65413 \
+            -quickout zap_report.html \
+            -quickprogress || true
 
       - name: Verificar reporte ZAP
         run: |
@@ -84,7 +86,7 @@ jobs:
             exit 1
           fi
 
-      - name: Subir artefacto ZAP
+      - name: Subir reporte ZAP
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
