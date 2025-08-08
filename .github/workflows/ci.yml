@@ -53,13 +53,13 @@ jobs:
       - name: Esperar a que levante la app
         run: sleep 10
 
-      - name: Ejecutar ZAP desde instalación local
+      - name: Ejecutar ZAP desde Docker
         run: |
-          /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd \
-            -quickurl http://127.0.0.1:65413 \
-            -quickout zap_report.html \
-            -quickprogress || true
+          docker run --rm -v $(pwd):/zap/wrk/:rw \
+            -t owasp/zap2docker-stable \
+            zap-baseline.py \
+            -t http://host.docker.internal:65413 \
+            -r zap_report.html || true
 
       - name: Validar existencia del reporte ZAP
         run: |
