@@ -34,46 +34,79 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Limpiar contenedor anterior
-        run: docker rm -f vulnerable-app || true
+      - name: Build imagen (si no existe)
+      # usa listado local (rápido) en vez de inspect (a veces se cuelga)
+        run: |
+          IMAGE_ID=$(docker images -q dsvpwa)
+          if [ -z "$IMAGE_ID" ]; then
+            echo "🛠 Construyendo imagen 'dsvpwa'..."
+            docker build -t dsvpwa .
+          else
+            echo "✅ Imagen 'dsvpwa' ya existente: $IMAGE_ID"
+          fi
 
-      - name: Build imagen app
-        run: docker build -t dsvpwa .
-
-      - name: Levantar app (expuesta en localhost)
-        run: docker run -d --name vulnerable-app -p 127.0.0.1:65413:65413 dsvpwa
+      - name: Arrancar app (reusar 65413 o asignar puerto dinámico)
+        id: start
+        shell: bash
+        run: |
+          # ¿Ya hay algo escuchando en 65413? Reúsalo.
+          if lsof -iTCP:65413 -sTCP:LISTEN >/dev/null; then
+            echo "start_container=false" >> $GITHUB_ENV
+            echo "TARGET_URL=http://127.0.0.1:65413" >> $GITHUB_ENV
+            echo "🔁 Reusando servicio existente en 65413"
+          else
+            # Limpia contenedor previo con ese nombre por si quedó colgado
+            docker rm -f vulnerable-app >/dev/null 2>&1 || true
+            # Mapea puerto host dinámico (host elige un puerto libre)
+            docker run -d --name vulnerable-app -p 127.0.0.1::65413 dsvpwa
+            # Descubre el puerto host asignado (p.ej. 127.0.0.1:49123->65413/tcp)
+            HOST_PORT=$(docker port vulnerable-app 65413/tcp | sed 's/.*://')
+            echo "start_container=true" >> $GITHUB_ENV
+            echo "HOST_PORT=$HOST_PORT" >> $GITHUB_ENV
+            echo "TARGET_URL=http://127.0.0.1:${HOST_PORT}" >> $GITHUB_ENV
+            echo "🚀 App levantada en puerto dinámico ${HOST_PORT}"
+          fi
 
       - name: Healthcheck HTTP
+        shell: bash
         run: |
-          echo "⌛ Esperando http://127.0.0.1:65413"
-          for i in {1..15}; do
-            if curl -s -f http://127.0.0.1:65413 >/dev/null; then
-              echo "✔ OK"
+          echo "⌛ Esperando $TARGET_URL"
+          for i in {1..20}; do
+            if curl -s -f "$TARGET_URL" >/dev/null; then
+              echo "✔ Aplicación en línea: $TARGET_URL"
               exit 0
             fi
-            echo "…"
+            echo "⏳ Esperando..."
             sleep 2
           done
-          echo "❌ No respondió"
-          docker logs vulnerable-app || true
+          echo "❌ No respondió a tiempo"
+          if [ "${start_container:-false}" = "true" ]; then
+            docker logs vulnerable-app || true
+          fi
           exit 1
 
+      # Usa tu ZAP local (sin descargar imagen gigante cada vez)
       - name: ZAP local (sin Docker)
         run: |
           /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd \
-            -quickurl http://127.0.0.1:65413 \
+            -cmd -quickurl "$TARGET_URL" \
             -quickout zap_report.html \
             -quickprogress || true
 
-      - name: Verificar reporte
-        run: test -f zap_report.html
+      - name: Verificar reporte ZAP
+        run: |
+          test -f zap_report.html || (echo "❌ Reporte ZAP NO generado" && exit 1)
+          echo "✔ Reporte ZAP generado"
 
-      - uses: actions/upload-artifact@v4
+      - name: Subir reporte ZAP
+        uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap_report.html
 
-      - name: Cleanup
+      - name: Cleanup (solo si lo levantó el job)
         if: always()
-        run: docker rm -f vulnerable-app || true
+        run: |
+          if [ "${start_container:-false}" = "true" ]; then
+            docker rm -f vulnerable-app || true
+          fi
