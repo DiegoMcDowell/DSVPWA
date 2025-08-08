@@ -26,7 +26,7 @@ jobs:
           sonar-scanner || true
 
       - name: Subir reporte de Bandit
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bandit-report
           path: bandit_report.html
@@ -49,7 +49,7 @@ jobs:
             zap-baseline.py -t http://host.docker.internal:65413 -r zap_report.html || true
 
       - name: Subir reporte ZAP
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap_report.html
