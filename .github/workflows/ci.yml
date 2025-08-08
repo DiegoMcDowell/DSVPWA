@@ -36,23 +36,14 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Verificar imagen Docker
-        run: |
-          if ! docker image inspect dsvpwa > /dev/null 2>&1; then
-            echo "🛠 Construyendo imagen 'dsvpwa'..."
-            docker build -t dsvpwa .
-          else
-            echo "✅ Imagen 'dsvpwa' ya existe."
-          fi
+      - name: Limpiar contenedor anterior
+        run: docker rm -f vulnerable-app || true
 
-      - name: Iniciar contenedor sólo si puerto 65413 está libre
-        run: |
-          if lsof -i TCP:65413 | grep LISTEN > /dev/null; then
-            echo "✅ Puerto 65413 en uso, omitiendo docker run."
-          else
-            echo "🚀 Puerto libre, lanzando contenedor 'vulnerable-app'..."
-            docker run -d --rm --name vulnerable-app -p 127.0.0.1:65413:65413 dsvpwa
-          fi
+      - name: Construir imagen Docker
+        run: docker build -t dsvpwa .
+
+      - name: Levantar contenedor vulnerable
+        run: docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
 
       - name: Comprobar que la app responde (HTTP 200)
         run: |
@@ -66,11 +57,15 @@ jobs:
             sleep 2
           done
           echo "❌ La aplicación no respondió a tiempo"
+          docker logs vulnerable-app
           exit 1
 
-      - name: Escaneo ZAP Baseline (Docker)
+      - name: Ejecutar ZAP Baseline Scan (Docker)
         run: |
-          docker run --rm -v "$(pwd)":/zap/wrk/:rw -t owasp/zap2docker-stable \
+          docker pull zaproxy/zap-stable
+          docker run --rm \
+            -v "$(pwd)":/zap/wrk/:rw \
+            -t zaproxy/zap-stable \
             zap-baseline.py \
             -t http://host.docker.internal:65413 \
             -r zap_report.html || true
@@ -89,3 +84,7 @@ jobs:
         with:
           name: zap-report
           path: zap_report.html
+
+      - name: Eliminar contenedor al final
+        if: always()
+        run: docker rm -f vulnerable-app || true
