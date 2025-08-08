@@ -46,12 +46,12 @@ jobs:
             echo "✅ Imagen 'dsvpwa' ya existe. Skipping build."
           fi
 
-      - name: Verificar si el contenedor ya está corriendo
+      - name: Verificar si algo ya está usando el puerto 65413
         run: |
-          if docker ps -q -f name=vulnerable-app > /dev/null; then
-            echo "✅ Contenedor 'vulnerable-app' ya está corriendo."
+          if lsof -i :65413 | grep LISTEN > /dev/null; then
+            echo "✅ Ya hay algo corriendo en el puerto 65413. Usándolo."
           else
-            echo "🚀 Lanzando contenedor 'vulnerable-app'..."
+            echo "🚀 Nada en el puerto, lanzando contenedor..."
             docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
           fi
 
@@ -67,7 +67,6 @@ jobs:
             sleep 2
           done
           echo "❌ La aplicación no respondió a tiempo"
-          docker logs vulnerable-app || true
           exit 1
 
       - name: Ejecutar ZAP desde instalación local
