@@ -35,11 +35,23 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Levantar app vulnerable
+      - name: Eliminar contenedor anterior si existe
         run: |
-          docker build -t dsvpwa .
-          docker run -d -p 65413:65413 --name vulnerable-app dsvpwa
-          sleep 10
+          if docker ps -a --format '{{.Names}}' | grep -Eq '^vulnerable-app$'; then
+            echo "🧹 Eliminando contenedor anterior..."
+            docker rm -f vulnerable-app
+          else
+            echo "✅ No hay contenedor previo"
+          fi
+
+      - name: Construir imagen Docker de DSVPWA
+        run: docker build -t dsvpwa .
+
+      - name: Levantar contenedor de DSVPWA
+        run: docker run -d -p 65413:65413 --name vulnerable-app dsvpwa
+
+      - name: Esperar a que levante la app
+        run: sleep 10
 
       - name: Ejecutar ZAP desde instalación local
         run: |
@@ -49,11 +61,21 @@ jobs:
             -quickout zap_report.html \
             -quickprogress || true
 
+      - name: Validar existencia del reporte ZAP
+        run: |
+          if [ -f zap_report.html ]; then
+            echo "✔ Reporte ZAP generado correctamente"
+          else
+            echo "❌ Reporte ZAP NO generado"
+            exit 1
+          fi
+
       - name: Subir reporte ZAP
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap_report.html
 
-      - name: Detener app vulnerable
-        run: docker stop vulnerable-app
+      - name: Detener contenedor al final
+        if: always()
+        run: docker rm -f vulnerable-app || true
