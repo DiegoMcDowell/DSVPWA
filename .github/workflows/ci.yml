@@ -35,32 +35,43 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Eliminar contenedor anterior si existe
+      - name: Limpiar contenedor previo
         run: |
-          if docker ps -a --format '{{.Names}}' | grep -Eq '^vulnerable-app$'; then
-            echo "🧹 Eliminando contenedor anterior..."
-            docker rm -f vulnerable-app
-          else
-            echo "✅ No hay contenedor previo"
-          fi
+          docker rm -f vulnerable-app || true
 
       - name: Construir imagen Docker de DSVPWA
         run: docker build -t dsvpwa .
 
-      - name: Lanzar contenedor vulnerable
+      - name: Crear red docker para ZAP
+        run: docker network create zapnet || true
+
+      - name: Lanzar contenedor vulnerable en red zapnet
         run: |
-          docker run -d -p 65413:65413 --name vulnerable-app dsvpwa \
+          docker run -d --network zapnet --name vulnerable-app dsvpwa \
             python dsvpwa.py --host 0.0.0.0 --port 65413
 
-      - name: Esperar a que levante la app
-        run: sleep 10
-
-      - name: Ejecutar ZAP desde Docker
+      - name: Esperar que la aplicación levante
         run: |
-          docker run --rm -v $(pwd):/zap/wrk/:rw \
-            -t owasp/zap2docker-stable \
+          for i in $(seq 1 10); do
+            if curl -s http://localhost:65413 >/dev/null; then
+              echo "App lista"
+              break
+            fi
+            echo "Esperando..."
+            sleep 2
+            if [ "$i" -eq 10 ]; then
+              echo "❌ La aplicación no respondió a tiempo"
+              exit 1
+            fi
+          done
+
+      - name: Ejecutar ZAP desde Docker en la misma red
+        run: |
+          docker run --rm --network zapnet \
+            -v "$(pwd)":/zap/wrk/:rw \
+            owasp/zap2docker-stable \
             zap-baseline.py \
-            -t http://host.docker.internal:65413 \
+            -t http://vulnerable-app:65413 \
             -r zap_report.html || true
 
       - name: Validar existencia del reporte ZAP
@@ -78,6 +89,6 @@ jobs:
           name: zap-report
           path: zap_report.html
 
-      - name: Detener contenedor al final
+      - name: Detener contenedor vulnerable al final
         if: always()
         run: docker rm -f vulnerable-app || true
