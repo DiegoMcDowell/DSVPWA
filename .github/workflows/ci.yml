@@ -36,20 +36,29 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Limpiar contenedor anterior
-        run: docker rm -f vulnerable-app || true
-
-      - name: Construir imagen Docker
-        run: docker build -t dsvpwa .
-
-      - name: Levantar contenedor vulnerable
-        run: docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
-
-      - name: Comprobar que la app responde (HTTP 200)
+      - name: Construir imagen Docker si no existe
         run: |
-          echo "⌛ Esperando respuesta en http://localhost:65413"
+          if ! docker image inspect dsvpwa > /dev/null 2>&1; then
+            echo "🛠 Construyendo imagen 'dsvpwa'..."
+            docker build -t dsvpwa .
+          else
+            echo "✅ Imagen 'dsvpwa' ya existente"
+          fi
+
+      - name: Iniciar contenedor solo si el puerto 65413 está libre
+        run: |
+          if ! lsof -i TCP:65413 | grep LISTEN > /dev/null; then
+            echo "🚀 Puerto libre, lanzando contenedor 'vulnerable-app'..."
+            docker run -d --name vulnerable-app -p 127.0.0.1:65413:65413 dsvpwa
+          else
+            echo "✅ Puerto 65413 en uso, se asume contenedor existente"
+          fi
+
+      - name: Esperar que la app responda (HTTP 200)
+        run: |
+          echo "⌛ Esperando respuesta en http://127.0.0.1:65413"
           for i in {1..10}; do
-            if curl -s -f http://localhost:65413 >/dev/null; then
+            if curl -s -f http://127.0.0.1:65413 > /dev/null; then
               echo "✔ Aplicación en línea"
               exit 0
             fi
@@ -60,14 +69,11 @@ jobs:
           docker logs vulnerable-app
           exit 1
 
-      - name: Ejecutar ZAP Baseline Scan (Docker)
+      - name: Escaneo ZAP Baseline con Docker
         run: |
-          docker pull zaproxy/zap-stable
-          docker run --rm \
-            -v "$(pwd)":/zap/wrk/:rw \
-            -t zaproxy/zap-stable \
+          docker run --rm -v "$(pwd)":/zap/wrk/:rw -t zaproxy/zap-stable \
             zap-baseline.py \
-            -t http://host.docker.internal:65413 \
+            -t http://127.0.0.1:65413 \
             -r zap_report.html || true
 
       - name: Verificar reporte ZAP
@@ -85,6 +91,9 @@ jobs:
           name: zap-report
           path: zap_report.html
 
-      - name: Eliminar contenedor al final
+      - name: Detener contenedor si fue iniciado por el workflow
         if: always()
-        run: docker rm -f vulnerable-app || true
+        run: |
+          if docker ps -q -f name=vulnerable-app > /dev/null; then
+            docker rm -f vulnerable-app
+          fi
