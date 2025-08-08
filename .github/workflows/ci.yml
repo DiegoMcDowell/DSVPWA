@@ -43,7 +43,11 @@ jobs:
 
       - name: Ejecutar ZAP desde instalación local
         run: |
-          /Applications/OWASP\ ZAP.app/Contents/MacOS/ZAP.sh -cmd -quickurl http://localhost:65413 -quickout zap_report.html -quickprogress || true
+          /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
+            -cmd \
+            -quickurl http://127.0.0.1:65413 \
+            -quickout zap_report.html \
+            -quickprogress || true
 
       - name: Subir reporte ZAP
         uses: actions/upload-artifact@v4
