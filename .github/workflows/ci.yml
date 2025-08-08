@@ -47,8 +47,10 @@ jobs:
       - name: Construir imagen Docker de DSVPWA
         run: docker build -t dsvpwa .
 
-      - name: Levantar contenedor de DSVPWA
-        run: docker run -d -p 65413:65413 --name vulnerable-app dsvpwa
+      - name: Lanzar contenedor vulnerable
+        run: |
+          docker run -d -p 65413:65413 --name vulnerable-app dsvpwa \
+            python dsvpwa.py --host 0.0.0.0 --port 65413
 
       - name: Esperar a que levante la app
         run: sleep 10
