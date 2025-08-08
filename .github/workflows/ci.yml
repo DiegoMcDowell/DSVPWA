@@ -45,20 +45,17 @@ jobs:
             echo "✅ Imagen 'dsvpwa' ya existe."
           fi
 
-      - name: Verificar si algo usa el puerto 65413
+      - name: Lanzar contenedor accesible desde localhost
         run: |
-          if lsof -i TCP:65413 | grep LISTEN > /dev/null; then
-            echo "✅ Puerto 65413 en uso, reutilizando contenedor existente."
-          else
-            echo "🚀 Lanzando contenedor 'vulnerable-app'..."
-            docker run -d --name vulnerable-app -p 65413:65413 dsvpwa
-          fi
+          echo "🚀 Lanzando contenedor 'vulnerable-app'..."
+          docker run -d --rm --name vulnerable-app \
+            -p 127.0.0.1:65413:65413 dsvpwa
 
       - name: Esperar que la app esté disponible
         run: |
-          echo "⌛ Esperando respuesta en http://localhost:65413"
-          for i in $(seq 1 10); do
-            if curl -s http://localhost:65413 | grep "<!DOCTYPE" > /dev/null; then
+          echo "⌛ Esperando respuesta en http://127.0.0.1:65413"
+          for i in $(seq 1 15); do
+            if curl -s http://127.0.0.1:65413 | grep "<!DOCTYPE" > /dev/null; then
               echo "✔ Aplicación en línea"
               exit 0
             fi
@@ -71,7 +68,7 @@ jobs:
       - name: Ejecutar ZAP local apuntando a localhost
         run: |
           /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd -quickurl http://localhost:65413 \
+            -cmd -quickurl http://127.0.0.1:65413 \
             -quickout zap_report.html -quickprogress || true
 
       - name: Verificar reporte ZAP
