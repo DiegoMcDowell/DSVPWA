@@ -1,0 +1,58 @@
+name: CI/CD con SAST y DAST para DSVPWA
+
+on: [push, pull_request]
+
+jobs:
+  sast:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Instalar dependencias
+        run: |
+          pip install bandit pylint
+
+      - name: Analizar con Bandit
+        run: bandit -r dsvpwa -f html -o bandit_report.html || true
+
+      - name: Analizar con Pylint
+        run: pylint dsvpwa/*.py || true
+
+      - name: Ejecutar SonarQube Scanner
+        run: |
+          wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+          unzip sonar-scanner-cli-*.zip
+          export PATH="$PWD/sonar-scanner-*/bin:$PATH"
+          sonar-scanner || true
+
+      - name: Subir reporte de Bandit
+        uses: actions/upload-artifact@v3
+        with:
+          name: bandit-report
+          path: bandit_report.html
+
+  dast:
+    runs-on: self-hosted
+    needs: sast
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Construir y lanzar contenedor vulnerable
+        run: |
+          docker build -t dsvpwa .
+          docker run -d -p 65413:65413 --name vulnerable-app dsvpwa
+          sleep 10
+
+      - name: Ejecutar OWASP ZAP
+        run: |
+          docker run -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-stable \
+            zap-baseline.py -t http://host.docker.internal:65413 -r zap_report.html || true
+
+      - name: Subir reporte ZAP
+        uses: actions/upload-artifact@v3
+        with:
+          name: zap-report
+          path: zap_report.html
+
+      - name: Detener contenedor vulnerable
+        run: docker stop vulnerable-app
