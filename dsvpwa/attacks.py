@@ -28,7 +28,7 @@ class Attack():
     def run(self):
         pass
 
-
+#SQL PRUEBA
 class SQLinjection(Attack):
     def run(self, handler):
         params = handler.params
