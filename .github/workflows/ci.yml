@@ -1,8 +1,14 @@
+# .github/workflows/ci-cd.yml
 name: CI/CD con SAST y DAST para DSVPWA
 
-on: [push, pull_request]
+on:
+  - push
+  - pull_request
 
 jobs:
+  # --------------------
+  # 1) SAST (estático)
+  # --------------------
   sast:
     runs-on: self-hosted
 
@@ -10,16 +16,16 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v3
 
-      - name: Instalar dependencias Python
+      - name: Instalar dependencias Python (Bandit/Pylint)
         run: pip install bandit pylint
 
-      - name: Analizar con Bandit
+      - name: Bandit (reporte HTML)
         run: bandit -r dsvpwa -f html -o bandit_report.html || true
 
-      - name: Analizar con Pylint
+      - name: Pylint
         run: pylint dsvpwa/*.py || true
 
-      - name: Ejecutar SonarQube Scanner (local)
+      - name: SonarQube Scanner (local)
         run: sonar-scanner || true
 
       - name: Subir reporte Bandit
@@ -28,14 +34,20 @@ jobs:
           name: bandit-report
           path: bandit_report.html
 
+  # --------------------
+  # 2) DAST (dinámico)
+  # --------------------
   dast:
     runs-on: self-hosted
     needs: sast
-    steps:
-      - uses: actions/checkout@v3
 
-      - name: Build imagen (si no existe)
-      # usa listado local (rápido) en vez de inspect (a veces se cuelga)
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v3
+
+      # Build rápido (sin inspect que a veces cuelga)
+      - name: Construir imagen Docker si no existe
+        shell: bash
         run: |
           IMAGE_ID=$(docker images -q dsvpwa)
           if [ -z "$IMAGE_ID" ]; then
@@ -45,27 +57,26 @@ jobs:
             echo "✅ Imagen 'dsvpwa' ya existente: $IMAGE_ID"
           fi
 
-      - name: Arrancar app (reusar 65413 o asignar puerto dinámico)
+      # Reusar 65413 si ya está en uso; si no, asignar puerto host dinámico
+      - name: Arrancar app (reusar 65413 o puerto dinámico)
         id: start
         shell: bash
         run: |
-          # ¿Ya hay algo escuchando en 65413? Reúsalo.
           if lsof -iTCP:65413 -sTCP:LISTEN >/dev/null; then
             echo "start_container=false" >> $GITHUB_ENV
             echo "TARGET_URL=http://127.0.0.1:65413" >> $GITHUB_ENV
             echo "🔁 Reusando servicio existente en 65413"
           else
-            # Limpia contenedor previo con ese nombre por si quedó colgado
             docker rm -f vulnerable-app >/dev/null 2>&1 || true
-            # Mapea puerto host dinámico (host elige un puerto libre)
+            # Puerto host dinámico (evita conflictos): 127.0.0.1::65413
             docker run -d --name vulnerable-app -p 127.0.0.1::65413 dsvpwa
-            # Descubre el puerto host asignado (p.ej. 127.0.0.1:49123->65413/tcp)
-            HOST_PORT=$(docker port vulnerable-app 65413/tcp | sed 's/.*://')
+            HOST_PORT=$(docker port vulnerable-app 65413/tcp | awk -F: '{print $2}')
             echo "start_container=true" >> $GITHUB_ENV
             echo "HOST_PORT=$HOST_PORT" >> $GITHUB_ENV
             echo "TARGET_URL=http://127.0.0.1:${HOST_PORT}" >> $GITHUB_ENV
             echo "🚀 App levantada en puerto dinámico ${HOST_PORT}"
           fi
+          echo "TARGET_URL=$TARGET_URL"
 
       - name: Healthcheck HTTP
         shell: bash
@@ -85,27 +96,61 @@ jobs:
           fi
           exit 1
 
-      # Usa tu ZAP local (sin descargar imagen gigante cada vez)
-      - name: ZAP local (sin Docker)
+      # ZAP local, con home aislado (-dir) y reporte en tu carpeta + workspace
+      - name: ZAP local (home aislado y salida en tu carpeta)
+        shell: bash
+        env:
+          OUT_DIR: "/Users/diegomcdowell/Documents/CAPACITACIONES/2025/CODIGO SEGURO/MODULO 5/SESION_9/CODIGO"
         run: |
-          /Applications/ZAP.app/Contents/MacOS/ZAP.sh \
-            -cmd -quickurl "$TARGET_URL" \
-            -quickout zap_report.html \
-            -quickprogress || true
+          ZAP_HOME_DIR="$RUNNER_TEMP/zap_home_$GITHUB_RUN_ID"
+          mkdir -p "$ZAP_HOME_DIR" "$OUT_DIR"
 
-      - name: Verificar reporte ZAP
+          OUT_FILE="$OUT_DIR/zap_report.html"
+          LOG_FILE="$GITHUB_WORKSPACE/zap_run.log"
+
+          echo "Usando ZAP_HOME: $ZAP_HOME_DIR"
+          echo "Reporte saldrá en: $OUT_FILE"
+
+          "/Applications/ZAP.app/Contents/MacOS/ZAP.sh" \
+            -cmd \
+            -dir "$ZAP_HOME_DIR" \
+            -port 8095 \
+            -host 127.0.0.1 \
+            -config api.disablekey=true \
+            -quickurl "$TARGET_URL" \
+            -quickout "$OUT_FILE" \
+            -quickprogress 2>&1 | tee "$LOG_FILE" || true
+
+          # Copiamos al workspace para subirlo como artefacto
+          cp -f "$OUT_FILE" "$GITHUB_WORKSPACE/zap_report.html" 2>/dev/null || true
+
+          echo "Contenido OUT_DIR:"
+          ls -lah "$OUT_DIR" || true
+          echo "Contenido WORKSPACE:"
+          ls -lah "$GITHUB_WORKSPACE" || true
+
+      - name: Verificar reporte ZAP (mostrar log si falla)
+        shell: bash
         run: |
-          test -f zap_report.html || (echo "❌ Reporte ZAP NO generado" && exit 1)
-          echo "✔ Reporte ZAP generado"
+          if [ -f "$GITHUB_WORKSPACE/zap_report.html" ]; then
+            echo "✔ Reporte ZAP generado: $GITHUB_WORKSPACE/zap_report.html"
+          else
+            echo "❌ Reporte ZAP NO generado. Últimas líneas del log:"
+            tail -n 200 "$GITHUB_WORKSPACE/zap_run.log" || true
+            exit 1
+          fi
 
-      - name: Subir reporte ZAP
+      - name: Subir artefactos ZAP (reporte + log)
         uses: actions/upload-artifact@v4
         with:
-          name: zap-report
-          path: zap_report.html
+          name: zap-output
+          path: |
+            zap_report.html
+            zap_run.log
 
       - name: Cleanup (solo si lo levantó el job)
         if: always()
+        shell: bash
         run: |
           if [ "${start_container:-false}" = "true" ]; then
             docker rm -f vulnerable-app || true
